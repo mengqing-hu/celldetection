@@ -133,3 +133,6 @@ dmypy.json
 
 data/
 mydata/
+Notes/
+.gitignore
+*.pth
