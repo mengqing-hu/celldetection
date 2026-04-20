@@ -25,14 +25,15 @@ ws_list -s
 #### Module management on Capella:
 
 ```
-module spider Python/3.13.5
-module load release/2026  GCCcore/14.3.0
-module load Python/3.13.5
+module spider Python/3.12.3
+
+module load release/25.06  GCCcore/13.3.0 Python/3.12.3 CUDA/12.8.0
+
 module list
 module --force purge
-module unload Python/3.13.5
-module avail Python/3.13.5
-module show Python/3.13.5
+module unload Python/3.12.3
+module avail Python/3.12.3
+module show Python/3.12.3
 
 ```
 
@@ -43,7 +44,7 @@ module show Python/3.13.5
 ```
 python -m venv .venv
 source .venv/bin/activate
-rm -rf venv
+pip install ipykernel
 which python
 deactivate
 pip install -r requirements.txt
@@ -67,6 +68,21 @@ jupyter kernelspec uninstall cpn-kernel
 ```
 
 
+```
 
+{
+  "argv": [
+    "bash",
+    "-lc",
+    "module load release/25.06 GCCcore/13.3.0 Python/3.12.3 CUDA/12.8.0 && exec /data/cat/ws/mehu311f-cpn_workspace/celldetection/.venv/bin/python -Xfrozen_modules=off -m ipykernel_launcher -f {connection_file}"
+  ],
+  "display_name": "cpn kernel",
+  "language": "python",
+  "metadata": {
+    "debugger": true
+  },
+  "kernel_protocol_version": "5.5"
+}
 
+```
 
