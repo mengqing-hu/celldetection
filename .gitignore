@@ -136,3 +136,5 @@ mydata/
 Notes/
 .gitignore
 *.pth
+
+copy.ipynb
