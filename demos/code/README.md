@@ -64,3 +64,13 @@ Quick start
 ```
 	 python mydata.py
 ```
+
+
+
+
+PS: convert mydata.ipynb to mydata.py with:
+
+```
+jupyter nbconvert --to script mydata.ipynb
+jupyter nbconvert --to script 'Cell Detection with Contour Proposal Networks.ipynb'
+```

@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Cell Detection with Contour Proposal Networks - Custom Dataset
+# # Cell Detection with Contour Proposal Networks
 # 
-# This notebook demonstrates how to use [Contour Proposal Networks](https://arxiv.org/abs/2104.03393) (CPN) for Cell Detection with your custom dataset and [PyTorch](https://pytorch.org/get-started/locally/).
+# <img src="https://raw.githubusercontent.com/FZJ-INM1-BDA/celldetection/main/assets/bbbc039-cpn-u22-demo-arrow.png" />
 # 
-# ## What is a Contour Proposal Network?
+# In this tutorial you will learn how to use [Contour Proposal Networks](https://arxiv.org/abs/2104.03393) (CPN) for Cell Detection with the 
+# [BBBC039](https://bbbc.broadinstitute.org/BBBC039) dataset and [PyTorch](https://pytorch.org/get-started/locally/).
+# 
+# ## Really quick: What is a Contour Proposal Network?
 # For a given image the Contour Proposal Network proposes **pixel-precise object contours**, each outlining an entire object. Like other detection networks, the CPN uses a so called backbone network to compute its features. This could be for example a ResNet-FPN ([Feature Pyramid Network](https://arxiv.org/abs/1612.03144) with [ResNet](https://arxiv.org/abs/1512.03385)), or a standard [U-Net](https://arxiv.org/abs/1505.04597) to name just two of many other options.
 # 
 # So it works kind of like bounding box regression models, such as [YOLO](https://arxiv.org/pdf/1506.02640.pdf) or [Region Proposal Networks](https://arxiv.org/abs/1506.01497), but with contours.
@@ -15,7 +18,7 @@
 # ## What is covered here?
 # 1. [Install source](#1.-Install-pip-install-celldetection)
 # 2. [The configuration](#2.-The-configuration)
-# 3. [The custom data](#3.-The-data)
+# 3. [The data](#3.-The-data)
 # 4. [The Contour Proposal Network](#4.-The-Contour-Proposal-Network)
 # 5. [Training](#5.-Training)
 # 6. [Evaluation and FPS measurement](#Testing-and-inference-speed)
@@ -33,7 +36,7 @@
 # 
 # To install `CellDetection`, you can simply use pip: `pip install celldetection`
 
-# In[2]:
+# In[123]:
 
 
 import torch
@@ -41,7 +44,7 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
 
-# In[3]:
+# In[124]:
 
 
 from torch.cuda.amp import GradScaler, autocast
@@ -50,7 +53,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 
-# In[4]:
+# In[125]:
 
 
 from matplotlib import pyplot as plt
@@ -60,30 +63,27 @@ import celldetection as cd
 from tqdm import tqdm
 import numpy as np
 import os
-import sys
-sys.path.insert(0, '.')
-from my_dataset import MyDatasetTrain, MyDatasetVal, MyDatasetTest
 
 
-# In[5]:
+# In[126]:
 
 
 import warnings
 warnings.filterwarnings('ignore')
 
 
-# In[6]:
+# In[127]:
 
 
 cd.__version__
 
 
-# In[ ]:
+# In[128]:
 
 
 from pathlib import Path
 
-output_dir = Path("./output/mydata_output")
+output_dir = Path("./output/Cell Detection with Contour Proposal Networks")
 output_dir.mkdir(parents=True, exist_ok=True)
 print(f"Output directory: {output_dir.resolve()}")
 
@@ -94,13 +94,13 @@ print(f"Output directory: {output_dir.resolve()}")
 # 
 # The config includes among other things the optimizer choice, batch size, specific CPN architecture and settings, crop size and number of epochs.
 
-# In[8]:
+# In[129]:
 
 
 conf = cd.Config(
     # data
-    directory='../mydata',  # Change to custom dataset directory
-    download_data=False,   # No need to download, use local data
+    directory='./data',
+    download_data=True,
     in_channels=1,
     classes=2,
     shuffle=True,
@@ -121,13 +121,12 @@ conf = cd.Config(
     inputs_mean=.5,
     inputs_std=.5,
     tweaks={
-        'BatchNorm2d': {'momentum': 0.1}
+        'BatchNorm2d': {'momentum': 0.05}
     },
 
     # optimizer
-    # optimizer={'Adam': {'lr': 0.0001, 'betas': (0.9, 0.999)}},
-    optimizer={'Adam': {'lr': 0.0001, 'betas': (0.9, 0.999), 'weight_decay': 1e-3}},
-    scheduler={'StepLR': {'step_size': 5, 'gamma': .5}},
+    optimizer={'Adam': {'lr': 0.0008, 'betas': (0.9, 0.999)}},
+    scheduler={'StepLR': {'step_size': 5, 'gamma': .99}},
 
     # training
     epochs=20,
@@ -148,34 +147,29 @@ print(conf)
 # ## 3. The data
 # <hr/>
 # 
-# ### Loading custom data
-# Here, we load the custom dataset from `./mydata/` directory with metadata-based train/val/test splits.
-# The dataset includes image and mask files in PNG format.
+# ### Loading data
+# Here, we load the data. If you already have a local copy of the BBBC039 dataset make sure to include the correct directory in the config and to disable the download option.
+# Otherwise, the following code will automatically download the data from the Broad Institute: https://bbbc.broadinstitute.org/BBBC039.
 
-# In[9]:
+# In[130]:
 
 
-train_mydata = MyDatasetTrain('../mydata')
-val_mydata = MyDatasetVal('../mydata')
-test_mydata = MyDatasetTest('../mydata')
-
-print(f"Training set: {len(train_mydata)} samples")
-print(f"Validation set: {len(val_mydata)} samples")
-print(f"Test set: {len(test_mydata)} samples")
+train_bbbc039 = cd.data.BBBC039Train(conf.directory, download=conf.download_data)
+val_bbbc039 = cd.data.BBBC039Val(conf.directory)
+test_bbbc039 = cd.data.BBBC039Test(conf.directory)
 
 
 # ### Transformations with [Albumentations](https://albumentations.ai/)
 # 
 # Data augmentation is a very popular strategy to improve training. Below you find a very basic setup, feel free to test different configurations.
 
-# In[10]:
+# In[131]:
 
 
 transforms = A.Compose([
     A.RandomRotate90(),
     A.Transpose(),
     A.RandomGamma((42, 100)),
-    # A.ElasticTransform(p=0.3),
     A.OneOf([
         A.MotionBlur(p=.2),
         A.MedianBlur(blur_limit=3, p=0.1),
@@ -187,7 +181,7 @@ transforms = A.Compose([
 
 # ### Visualizing transformations
 
-# In[11]:
+# In[132]:
 
 
 def demo_transforms(img, lbl, name=None):
@@ -213,20 +207,20 @@ def demo_transforms(img, lbl, name=None):
     plt.show()
 
 
-# In[12]:
+# In[133]:
 
 
-name, img, _, lbl = train_mydata[0]
+name, img, _, lbl = train_bbbc039[0]
 demo_transforms(img, lbl, name)
 
 
 # ### Dataset
 
-# In[13]:
+# In[134]:
 
 
 class Data:
-    def __init__(self, data, config, transforms=None, items=None, size=None, center_crop=False):
+    def __init__(self, data, config, transforms=None, items=None, size=None):
         self.transforms = transforms
         self.gen = cd.data.CPNTargetGenerator(
             samples=config.samples,
@@ -237,7 +231,6 @@ class Data:
         self._items = items or len(data)
         self.data = data
         self.size = size
-        self.center_crop = center_crop  
         self.channels = config.in_channels
 
     def __len__(self):
@@ -272,17 +265,9 @@ class Data:
         labels = labels.astype('int32')       
 
         # Optionally crop
-        # if self.size is not None:
-        #     h, w = self.size
-        #     img, labels = cd.data.random_crop(img, labels, height=h, width=w)
         if self.size is not None:
             h, w = self.size
-            if self.center_crop:
-                cy, cx = img.shape[0] // 2, img.shape[1] // 2
-                img = img[cy-h//2:cy+h//2, cx-w//2:cx+w//2]
-                labels = labels[cy-h//2:cy+h//2, cx-w//2:cx+w//2]
-            else:
-                img, labels = cd.data.random_crop(img, labels, height=h, width=w)
+            img, labels = cd.data.random_crop(img, labels, height=h, width=w)
 
         # Optionally transform
         if self.transforms is not None:
@@ -315,21 +300,18 @@ class Data:
         })
 
 
-# In[14]:
+# In[135]:
 
 
-train_data = Data(train_mydata, conf, transforms, items=conf.steps_per_epoch * conf.batch_size,
+train_data = Data(train_bbbc039, conf, transforms, items=conf.steps_per_epoch * conf.batch_size,
                   size=conf.crop_size)
-# val_data = Data(val_mydata, conf) 
-# val_data = Data(val_mydata, conf, size=conf.crop_size)
-# val_data = Data(val_mydata, conf, transforms, size=conf.crop_size)
-val_data = Data(val_mydata, conf, size=conf.crop_size, center_crop=True)  
-test_data = Data(test_mydata, conf)
+val_data = Data(val_bbbc039, conf)
+test_data = Data(test_bbbc039, conf)
 
 
 # ### Data Loader
 
-# In[15]:
+# In[136]:
 
 
 train_loader = DataLoader(train_data, batch_size=conf.batch_size, num_workers=conf.num_workers,
@@ -342,7 +324,7 @@ test_loader = DataLoader(test_data, batch_size=1, collate_fn=cd.universal_dict_c
 # Here, we take a look at the data. What you see here, is what the network will learn to produce.
 # Specifically, we can see if the data is processed correctly, the intensity range is adequate, and also visualize the effect of the Contour Proposal Network's `order` hyperparameter.
 
-# In[16]:
+# In[137]:
 
 
 def plot_example(data_loader, figsize=(8, 4.5)):
@@ -358,7 +340,7 @@ def plot_example(data_loader, figsize=(8, 4.5)):
     plt.xlim([0, image.shape[1]])
 
 
-# In[17]:
+# In[138]:
 
 
 def order_plot(data, data_loader):
@@ -376,7 +358,7 @@ def order_plot(data, data_loader):
 
 # #### Training data
 
-# In[18]:
+# In[139]:
 
 
 plot_example(train_loader)
@@ -388,7 +370,7 @@ plot_example(train_loader)
 # While `order = 1` only yields ellipses, higher settings add more and more detail.
 # Notably, you can always reduce the `order` after training a CPN. However, increasing it requires additional convolutional layers.
 
-# In[19]:
+# In[140]:
 
 
 order_plot(val_data, val_loader)
@@ -401,7 +383,7 @@ order_plot(val_data, val_loader)
 # This code snippet defines the actual model and allows for some tweaks to its settings, as specified in the config.
 # Here, `conf.cpn` can either be a class name, a file name of a PyTorch checkpoint, a url of a PyTorch checkpoint, or the name of a *pretrained model* hosted by `celldetection`.
 
-# In[20]:
+# In[141]:
 
 
 if conf.cpn in dir(cd.models):
@@ -429,7 +411,7 @@ if conf.tweaks is not None:
 # Define the optimizer and scheduler according to the config.
 # The gradient scaler only used when automated mixed precision is enabled for training.
 
-# In[21]:
+# In[142]:
 
 
 optimizer = cd.conf2optimizer(conf.optimizer, model.parameters())
@@ -439,7 +421,7 @@ scaler = GradScaler() if conf.amp else None
 
 # ### Training functions
 
-# In[22]:
+# In[143]:
 
 
 def train_epoch(model, data_loader, device, optimizer, desc=None, scaler=None, scheduler=None, progress=True):
@@ -458,7 +440,7 @@ def train_epoch(model, data_loader, device, optimizer, desc=None, scaler=None, s
 
         if progress:
             info = [desc] if desc is not None else []
-            info += ['loss %g' % np.round(loss_value, 3)]
+            info += ['loss %g' % np.round(cd.asnumpy(loss), 3)]
             tq.desc = ' - '.join(info)
 
         if scaler is None:
@@ -471,11 +453,10 @@ def train_epoch(model, data_loader, device, optimizer, desc=None, scaler=None, s
 
     if scheduler is not None:
         scheduler.step()
-
     return float(np.mean(epoch_losses)) if len(epoch_losses) else 0.0
 
 
-# In[23]:
+# In[144]:
 
 
 def validate_epoch(model, data_loader, device, use_amp=True, desc=None, progress=False):
@@ -500,7 +481,7 @@ def validate_epoch(model, data_loader, device, use_amp=True, desc=None, progress
     return float(np.mean(epoch_losses)) if len(epoch_losses) else 0.0
 
 
-# In[24]:
+# In[145]:
 
 
 def plot_loss_curves(train_losses, val_losses):
@@ -539,7 +520,7 @@ def plot_loss_curves_together(train_losses, val_losses):
     plt.show()
 
 
-# In[25]:
+# In[146]:
 
 
 def show_results(model, test_loader, device):
@@ -562,15 +543,7 @@ def show_results(model, test_loader, device):
 # ### Training loop
 # This basic training loop runs for a specified number of epochs and plots an example prediction from the test dataset every now and then.
 
-# In[26]:
-
-
-import os
-save_dir = './savemodel1'
-os.makedirs(save_dir, exist_ok=True)
-
-
-# In[27]:
+# In[147]:
 
 
 # for epoch in range(1, conf.epochs + 1):
@@ -598,11 +571,7 @@ for epoch in range(1, conf.epochs + 1):
     print(f'Epoch {epoch:03d} | train_loss: {train_loss:.4f} | val_loss: {val_loss:.4f}')
 
     if epoch % 10 == 0:
-        # show_results(model, val_loader, conf.device)
-
-        model_path = os.path.join(save_dir, f'model_epoch_{epoch}.pth')
-        torch.save(model.state_dict(), model_path)
-        print(f'Model saved: {model_path}')
+        show_results(model, val_loader, conf.device)
 
 plot_loss_curves(train_losses, val_losses)
 plot_loss_curves_together(train_losses, val_losses)
@@ -625,7 +594,7 @@ plot_loss_curves_together(train_losses, val_losses)
 # Here, we use the validation split of our dataset to determine which settings yield the best results.
 # The settings that yield the highest average F1 score during validation are used to evaluate the model on the dataset's test split.
 
-# In[28]:
+# In[115]:
 
 
 def avg_iou_score(results, iou_threshs=(.5, .6, .7, .8, .9), verbose=True):
@@ -642,7 +611,7 @@ def avg_iou_score(results, iou_threshs=(.5, .6, .7, .8, .9), verbose=True):
     return final_f1
 
 
-# In[29]:
+# In[116]:
 
 
 def evaluate(model, data_loader, device, use_amp, desc='Eval', progress=True, timing=False):
@@ -672,7 +641,7 @@ def evaluate(model, data_loader, device, use_amp, desc='Eval', progress=True, ti
     return results
 
 
-# In[30]:
+# In[117]:
 
 
 def validate_(model, data_loader, device, use_amp):
@@ -694,30 +663,10 @@ def validate_(model, data_loader, device, use_amp):
     print("Val f1 score:", best_f1)
 
 
-# In[33]:
+# In[118]:
 
 
-import os
-
-model_path = './savemodel1/model_epoch_20.pth'
-
-model_eval = getattr(cd.models, conf.cpn)(
-    in_channels=conf.in_channels, order=conf.order, samples=conf.samples,
-    refinement_iterations=conf.refinement_iterations, nms_thresh=conf.nms_thresh,
-    score_thresh=conf.score_thresh, contour_head_stride=conf.contour_head_stride,
-    classes=conf.classes, refinement_buckets=conf.refinement_buckets,
-    backbone_kwargs=dict(inputs_mean=conf.inputs_mean, inputs_std=conf.inputs_std)
-).to(conf.device)
-
-model_eval.load_state_dict(torch.load(model_path, map_location=conf.device))
-print(f'Model loaded from {model_path}')
-
-
-# In[34]:
-
-
-# validate_(model, val_loader, conf.device, conf.amp)
-validate_(model_eval, val_loader, conf.device, conf.amp)
+validate_(model, val_loader, conf.device, conf.amp)
 
 
 # ### Testing and inference speed
@@ -728,24 +677,24 @@ validate_(model_eval, val_loader, conf.device, conf.amp)
 # Since the test loader uses a batch size of 1, we can also measure the time that the model needs to predict contours for a single image. This per image delay can be averaged and used to get an estimated count for FPS.
 # In this case all images have size **(520, 696)**.
 
-# In[35]:
+# In[119]:
 
 
-# test_results = evaluate(model, test_loader, conf.device, conf.amp, timing=True)
-val_results = evaluate(model_eval, val_loader, conf.device, conf.amp, timing=True)
+val_results = evaluate(model, val_loader, conf.device, conf.amp, timing=True)
 
 
-# In[36]:
+# In[120]:
 
 
 final_f1 = avg_iou_score(val_results)
 
 
-# In[39]:
+# In[121]:
 
 
 def plot_iou_metrics_and_counts(results, iou_threshs=np.arange(0.1, 1.0, 0.1), figsize=(24, 6)):
-    """Plot IoU-threshold curves in 3 columns.
+    """
+    Plot IoU-threshold curves in 3 columns.
 
     Left: global-level metrics (computed from aggregated TP/FP/FN)
     Middle: sample-level metrics (average over images)
@@ -820,7 +769,7 @@ def plot_iou_metrics_and_counts(results, iou_threshs=np.arange(0.1, 1.0, 0.1), f
     }
 
 
-# In[40]:
+# In[122]:
 
 
 iou_plot_data = plot_iou_metrics_and_counts(val_results)
@@ -836,5 +785,3 @@ iou_plot_data = plot_iou_metrics_and_counts(val_results)
 # Since the only assumption of the CPN's contour approach are closed object contours, it is applicable to a wide range of detection problems, also outside the biomedical domain that have not been investigated yet.
 # 
 # On [celldetection.org](https://celldetection.org) or [https://git.io/JOnWX](https://git.io/JOnWX) you will find additional resources and examples.
-
-# 
