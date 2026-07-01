@@ -36,6 +36,15 @@ Files
 - mydata.py
 	- `mydata.py` was generated from this notebook with `jupyter nbconvert --to script mydata.ipynb`.
 
+- train_mydata.sh
+	- SLURM batch script for training `mydata.py` on Capella with one GPU.
+	- Requests 1 node, 1 GPU, 12 CPU cores, 96G memory, and 14 hours.
+	- Loads the Python/CUDA modules, activates the project virtual environment, changes into this folder, and runs:
+
+		python mydata.py
+
+	- Writes SLURM logs to files named like `slurm-cpn-mydata-<jobid>.out` and `slurm-cpn-mydata-<jobid>.err`.
+	- Prints the job id, node name, Python path, CUDA availability, GPU name, start/end time, and total duration.
 
 - savemodel/
 	- Directory containing saved model checkpoints (e.g., `model_epoch_10.pth`, `model_best.pth`). Use these to resume training or evaluate pretrained results.
@@ -65,6 +74,76 @@ Quick start
 	 python mydata.py
 ```
 
+Run with sbatch on Capella
+--------------------------
+
+Use `sbatch` for longer training jobs that should run on a compute node instead of the login node. You do not need to start an interactive `srun` session before submitting the job.
+
+1. Log in to Capella:
+
+```
+ssh ******@login1.capella.hpc.tu-dresden.de
+```
+
+2. Enter the code workspace:
+
+```
+cd /data/cat/ws/******-cpn_workspace_e1/celldetection/demos/code
+```
+
+3. Confirm that the batch script is in this folder:
+
+```
+ls *.sh
+```
+
+You should see `train_mydata.sh`.
+
+4. If you edited `mydata.ipynb`, convert it to `mydata.py` before submitting:
+
+```
+jupyter nbconvert --to script mydata.ipynb
+```
+
+5. Submit the fixed training job directly from the login node:
+
+```
+sbatch train_mydata.sh
+```
+
+6. Check the job status:
+
+```
+squeue -u ****** 
+```
+
+7. Watch the SLURM log after submission. Replace `<jobid>` with the id printed by `sbatch`:
+
+```
+tail -f slurm-cpn-mydata-<jobid>.out
+```
+
+The script uses the same resource request as this interactive command:
+
+```
+srun --partition=capella --nodes=1 --gres=gpu:1 --cpus-per-task=12 --mem=96G --time=14:00:00 --pty bash -l
+```
+
+Training outputs are written by `mydata.py` under:
+
+```
+output/mydata_output/
+```
+
+If automatic figure and log saving is enabled in the notebook/script, additional files are saved under:
+
+```
+output/mydata_output/all_figures/
+output/mydata_output/run.log
+```
+
+The SLURM job releases its GPU, CPU, and memory allocation automatically when `python mydata.py` finishes or fails.
+
 
 
 
@@ -72,5 +151,12 @@ PS: convert mydata.ipynb to mydata.py with:
 
 ```
 jupyter nbconvert --to script mydata.ipynb
+jupyter nbconvert --to script mydata_uncertainty.ipynb
+jupyter nbconvert --to python mydata_uncertainty.ipynb --output mydata_uncertainty.py
 jupyter nbconvert --to script 'Cell Detection with Contour Proposal Networks.ipynb'
 ```
+
+
+
+
+

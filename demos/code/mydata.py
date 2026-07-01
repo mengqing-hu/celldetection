@@ -33,7 +33,7 @@
 # 
 # To install `CellDetection`, you can simply use pip: `pip install celldetection`
 
-# In[2]:
+# In[1]:
 
 
 import torch
@@ -41,7 +41,7 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
 
-# In[3]:
+# In[2]:
 
 
 from torch.cuda.amp import GradScaler, autocast
@@ -50,7 +50,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 
-# In[4]:
+# In[3]:
 
 
 from matplotlib import pyplot as plt
@@ -65,14 +65,14 @@ sys.path.insert(0, '.')
 from my_dataset import MyDatasetTrain, MyDatasetVal, MyDatasetTest
 
 
-# In[5]:
+# In[4]:
 
 
 import warnings
 warnings.filterwarnings('ignore')
 
 
-# In[6]:
+# In[5]:
 
 
 cd.__version__
@@ -82,10 +82,58 @@ cd.__version__
 
 
 from pathlib import Path
+from datetime import datetime
+import sys
+from matplotlib import pyplot as plt
 
 output_dir = Path("./output/mydata_output")
 output_dir.mkdir(parents=True, exist_ok=True)
+
+fig_dir = output_dir / "all_figures"
+fig_dir.mkdir(parents=True, exist_ok=True)
+
+log_path = output_dir / "run.log"
+
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+            s.flush()
+
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+_log_file = open(log_path, "a", buffering=1)
+sys.stdout = Tee(sys.__stdout__, _log_file)
+sys.stderr = Tee(sys.__stderr__, _log_file)
+
+_original_show = plt.show
+_fig_counter = {"n": 0}
+
+def save_and_show(*args, **kwargs):
+    for num in plt.get_fignums():
+        fig = plt.figure(num)
+        _fig_counter["n"] += 1
+        fig.savefig(
+            fig_dir / f"figure_{_fig_counter['n']:03d}.png",
+            dpi=200,
+            bbox_inches="tight"
+        )
+
+    result = _original_show(*args, **kwargs)
+    plt.close("all")
+    return result
+
+plt.show = save_and_show
+
 print(f"Output directory: {output_dir.resolve()}")
+print(f"Logging to: {log_path.resolve()}")
+print(f"Saving all figures to: {fig_dir.resolve()}")
+print(f"Started at: {datetime.now()}")
 
 
 # ## 2. The configuration
@@ -94,7 +142,7 @@ print(f"Output directory: {output_dir.resolve()}")
 # 
 # The config includes among other things the optimizer choice, batch size, specific CPN architecture and settings, crop size and number of epochs.
 
-# In[8]:
+# In[ ]:
 
 
 conf = cd.Config(
@@ -109,6 +157,7 @@ conf = cd.Config(
 
     # cpn
     cpn='CpnU22',  # see https://git.io/JOnWX for alternatives
+    # cpn='CpnResNet50UNet',  # see https://git.io/JOnWX for alternatives
     score_thresh=.9,
     val_score_threshs=(.6, .8, .9),
     nms_thresh=.5,
@@ -130,8 +179,11 @@ conf = cd.Config(
     scheduler={'StepLR': {'step_size': 5, 'gamma': .5}},
 
     # training
-    epochs=20,
-    steps_per_epoch=36,
+    # epochs=20,
+    # steps_per_epoch=36,
+    # batch_size=8,
+    epochs=100,
+    steps_per_epoch=512,
     batch_size=8,
     amp=torch.cuda.is_available(),  # Automatic Mixed Precision (https://pytorch.org/docs/stable/amp.html)
 
@@ -152,7 +204,7 @@ print(conf)
 # Here, we load the custom dataset from `./mydata/` directory with metadata-based train/val/test splits.
 # The dataset includes image and mask files in PNG format.
 
-# In[9]:
+# In[3]:
 
 
 train_mydata = MyDatasetTrain('../mydata')
@@ -168,7 +220,7 @@ print(f"Test set: {len(test_mydata)} samples")
 # 
 # Data augmentation is a very popular strategy to improve training. Below you find a very basic setup, feel free to test different configurations.
 
-# In[10]:
+# In[9]:
 
 
 transforms = A.Compose([
@@ -187,7 +239,7 @@ transforms = A.Compose([
 
 # ### Visualizing transformations
 
-# In[11]:
+# In[10]:
 
 
 def demo_transforms(img, lbl, name=None):
@@ -213,7 +265,7 @@ def demo_transforms(img, lbl, name=None):
     plt.show()
 
 
-# In[12]:
+# In[11]:
 
 
 name, img, _, lbl = train_mydata[0]
@@ -222,7 +274,7 @@ demo_transforms(img, lbl, name)
 
 # ### Dataset
 
-# In[13]:
+# In[12]:
 
 
 class Data:
@@ -315,21 +367,21 @@ class Data:
         })
 
 
-# In[14]:
+# In[13]:
 
 
 train_data = Data(train_mydata, conf, transforms, items=conf.steps_per_epoch * conf.batch_size,
                   size=conf.crop_size)
-# val_data = Data(val_mydata, conf) 
+val_data = Data(val_mydata, conf) 
 # val_data = Data(val_mydata, conf, size=conf.crop_size)
 # val_data = Data(val_mydata, conf, transforms, size=conf.crop_size)
-val_data = Data(val_mydata, conf, size=conf.crop_size, center_crop=True)  
+# val_data = Data(val_mydata, conf, size=conf.crop_size, center_crop=True)  
 test_data = Data(test_mydata, conf)
 
 
 # ### Data Loader
 
-# In[15]:
+# In[14]:
 
 
 train_loader = DataLoader(train_data, batch_size=conf.batch_size, num_workers=conf.num_workers,
@@ -342,7 +394,7 @@ test_loader = DataLoader(test_data, batch_size=1, collate_fn=cd.universal_dict_c
 # Here, we take a look at the data. What you see here, is what the network will learn to produce.
 # Specifically, we can see if the data is processed correctly, the intensity range is adequate, and also visualize the effect of the Contour Proposal Network's `order` hyperparameter.
 
-# In[16]:
+# In[15]:
 
 
 def plot_example(data_loader, figsize=(8, 4.5)):
@@ -358,7 +410,7 @@ def plot_example(data_loader, figsize=(8, 4.5)):
     plt.xlim([0, image.shape[1]])
 
 
-# In[17]:
+# In[16]:
 
 
 def order_plot(data, data_loader):
@@ -376,7 +428,7 @@ def order_plot(data, data_loader):
 
 # #### Training data
 
-# In[18]:
+# In[17]:
 
 
 plot_example(train_loader)
@@ -388,7 +440,7 @@ plot_example(train_loader)
 # While `order = 1` only yields ellipses, higher settings add more and more detail.
 # Notably, you can always reduce the `order` after training a CPN. However, increasing it requires additional convolutional layers.
 
-# In[19]:
+# In[18]:
 
 
 order_plot(val_data, val_loader)
@@ -401,7 +453,7 @@ order_plot(val_data, val_loader)
 # This code snippet defines the actual model and allows for some tweaks to its settings, as specified in the config.
 # Here, `conf.cpn` can either be a class name, a file name of a PyTorch checkpoint, a url of a PyTorch checkpoint, or the name of a *pretrained model* hosted by `celldetection`.
 
-# In[20]:
+# In[19]:
 
 
 if conf.cpn in dir(cd.models):
@@ -429,7 +481,7 @@ if conf.tweaks is not None:
 # Define the optimizer and scheduler according to the config.
 # The gradient scaler only used when automated mixed precision is enabled for training.
 
-# In[21]:
+# In[20]:
 
 
 optimizer = cd.conf2optimizer(conf.optimizer, model.parameters())
@@ -439,7 +491,7 @@ scaler = GradScaler() if conf.amp else None
 
 # ### Training functions
 
-# In[22]:
+# In[21]:
 
 
 def train_epoch(model, data_loader, device, optimizer, desc=None, scaler=None, scheduler=None, progress=True):
@@ -475,11 +527,15 @@ def train_epoch(model, data_loader, device, optimizer, desc=None, scaler=None, s
     return float(np.mean(epoch_losses)) if len(epoch_losses) else 0.0
 
 
-# In[23]:
+# In[22]:
 
 
 def validate_epoch(model, data_loader, device, use_amp=True, desc=None, progress=False):
+    # Keep the CPN loss branch aligned with training while leaving submodules in eval mode.
+    was_training = model.training
     model.eval()
+    model.training = True
+
     tq = tqdm(data_loader, desc=desc) if progress else data_loader
     epoch_losses = []
 
@@ -497,10 +553,11 @@ def validate_epoch(model, data_loader, device, use_amp=True, desc=None, progress
                 info += ['val_loss %g' % np.round(loss_value, 3)]
                 tq.desc = ' - '.join(info)
 
+    model.training = was_training
     return float(np.mean(epoch_losses)) if len(epoch_losses) else 0.0
 
 
-# In[24]:
+# In[23]:
 
 
 def plot_loss_curves(train_losses, val_losses):
@@ -539,12 +596,12 @@ def plot_loss_curves_together(train_losses, val_losses):
     plt.show()
 
 
-# In[25]:
+# In[24]:
 
 
-def show_results(model, test_loader, device):
+def show_results(model, val_loader, device):
     model.eval()
-    batch = cd.to_device(next(iter(test_loader)), device)
+    batch = cd.to_device(next(iter(val_loader)), device)
     with torch.no_grad():
         outputs = model(batch['inputs'])
     o = cd.asnumpy(outputs)
@@ -562,15 +619,7 @@ def show_results(model, test_loader, device):
 # ### Training loop
 # This basic training loop runs for a specified number of epochs and plots an example prediction from the test dataset every now and then.
 
-# In[26]:
-
-
-import os
-save_dir = './savemodel1'
-os.makedirs(save_dir, exist_ok=True)
-
-
-# In[27]:
+# In[29]:
 
 
 # for epoch in range(1, conf.epochs + 1):
@@ -598,11 +647,11 @@ for epoch in range(1, conf.epochs + 1):
     print(f'Epoch {epoch:03d} | train_loss: {train_loss:.4f} | val_loss: {val_loss:.4f}')
 
     if epoch % 10 == 0:
-        # show_results(model, val_loader, conf.device)
+        show_results(model, val_loader, conf.device)
 
-        model_path = os.path.join(save_dir, f'model_epoch_{epoch}.pth')
-        torch.save(model.state_dict(), model_path)
-        print(f'Model saved: {model_path}')
+        # model_path = os.path.join(save_dir, f'model_epoch_{epoch}.pth')
+        # # torch.save(model.state_dict(), model_path)
+        # print(f'Model saved: {model_path}')
 
 plot_loss_curves(train_losses, val_losses)
 plot_loss_curves_together(train_losses, val_losses)
@@ -625,7 +674,7 @@ plot_loss_curves_together(train_losses, val_losses)
 # Here, we use the validation split of our dataset to determine which settings yield the best results.
 # The settings that yield the highest average F1 score during validation are used to evaluate the model on the dataset's test split.
 
-# In[28]:
+# In[30]:
 
 
 def avg_iou_score(results, iou_threshs=(.5, .6, .7, .8, .9), verbose=True):
@@ -642,7 +691,7 @@ def avg_iou_score(results, iou_threshs=(.5, .6, .7, .8, .9), verbose=True):
     return final_f1
 
 
-# In[29]:
+# In[31]:
 
 
 def evaluate(model, data_loader, device, use_amp, desc='Eval', progress=True, timing=False):
@@ -672,7 +721,7 @@ def evaluate(model, data_loader, device, use_amp, desc='Eval', progress=True, ti
     return results
 
 
-# In[30]:
+# In[32]:
 
 
 def validate_(model, data_loader, device, use_amp):
@@ -697,27 +746,8 @@ def validate_(model, data_loader, device, use_amp):
 # In[33]:
 
 
-import os
-
-model_path = './savemodel1/model_epoch_20.pth'
-
-model_eval = getattr(cd.models, conf.cpn)(
-    in_channels=conf.in_channels, order=conf.order, samples=conf.samples,
-    refinement_iterations=conf.refinement_iterations, nms_thresh=conf.nms_thresh,
-    score_thresh=conf.score_thresh, contour_head_stride=conf.contour_head_stride,
-    classes=conf.classes, refinement_buckets=conf.refinement_buckets,
-    backbone_kwargs=dict(inputs_mean=conf.inputs_mean, inputs_std=conf.inputs_std)
-).to(conf.device)
-
-model_eval.load_state_dict(torch.load(model_path, map_location=conf.device))
-print(f'Model loaded from {model_path}')
-
-
-# In[34]:
-
-
 # validate_(model, val_loader, conf.device, conf.amp)
-validate_(model_eval, val_loader, conf.device, conf.amp)
+validate_(model, val_loader, conf.device, conf.amp)
 
 
 # ### Testing and inference speed
@@ -728,20 +758,20 @@ validate_(model_eval, val_loader, conf.device, conf.amp)
 # Since the test loader uses a batch size of 1, we can also measure the time that the model needs to predict contours for a single image. This per image delay can be averaged and used to get an estimated count for FPS.
 # In this case all images have size **(520, 696)**.
 
-# In[35]:
+# In[34]:
 
 
 # test_results = evaluate(model, test_loader, conf.device, conf.amp, timing=True)
-val_results = evaluate(model_eval, val_loader, conf.device, conf.amp, timing=True)
+val_results = evaluate(model, val_loader, conf.device, conf.amp, timing=True)
 
 
-# In[36]:
+# In[35]:
 
 
 final_f1 = avg_iou_score(val_results)
 
 
-# In[39]:
+# In[36]:
 
 
 def plot_iou_metrics_and_counts(results, iou_threshs=np.arange(0.1, 1.0, 0.1), figsize=(24, 6)):
@@ -820,7 +850,7 @@ def plot_iou_metrics_and_counts(results, iou_threshs=np.arange(0.1, 1.0, 0.1), f
     }
 
 
-# In[40]:
+# In[37]:
 
 
 iou_plot_data = plot_iou_metrics_and_counts(val_results)
