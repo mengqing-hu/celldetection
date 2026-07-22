@@ -150,6 +150,8 @@ demos/code/mydata_1.ipynb
 uncertainty_test/
 
 
-all_figures/
-output/
-mydata_output/
+# all_figures/
+# output/
+# mydata_output/
+
+*.db
