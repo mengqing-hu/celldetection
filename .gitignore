@@ -155,3 +155,5 @@ uncertainty_test/
 # mydata_output/
 
 *.db
+
+output/

@@ -138,8 +138,11 @@ conf = cd.Config(
     scheduler={'StepLR': {'step_size': 5, 'gamma': .5}},
 
     # training
-    epochs=100,
-    steps_per_epoch=512,
+    # epochs=100,
+    # steps_per_epoch=512,
+    # batch_size=8,
+    epochs=20,
+    steps_per_epoch=36,
     batch_size=8,
     amp=torch.cuda.is_available(),  # Automatic Mixed Precision (https://pytorch.org/docs/stable/amp.html)
 
@@ -695,44 +698,138 @@ def show_results(model, val_loader, device):
 # In[25]:
 
 
-def show_uncertainty_results(model, data_loader, device, item_idx=0, top_k=2):
+# def show_uncertainty_results(model, data_loader, device, item_idx=0, top_k=2):
+#     model.eval()
+#     batch = cd.to_device(next(iter(data_loader)), device)
+
+#     with torch.no_grad():
+#         outputs = model(batch['inputs'])
+
+#     o = cd.asnumpy(outputs)
+#     images = cd.asnumpy(batch['inputs'])
+
+#     image = Data.unmap(images[item_idx].transpose(1, 2, 0))
+#     contours = o['contours'][item_idx]
+#     boxes = o['boxes'][item_idx]
+#     unc = o['box_uncertainties'][item_idx]
+
+#     if unc is None or len(unc) == 0:
+#         print('No box_uncertainties. Check uncertainty_head=True.')
+#         return
+
+#     mean_unc = unc.mean(axis=1)
+#     keep = np.argsort(mean_unc)[-top_k:]
+
+#     contours_show = contours[keep]
+#     boxes_show = boxes[keep]
+#     unc_show = unc[keep]
+
+#     plt.figure(figsize=(12, 12))
+#     cd.vis.show_detection(
+#         image,
+#         contours=contours_show,
+#         contour_linestyle='-'
+#     )
+
+#     ax = plt.gca()
+
+#     for box, u in zip(boxes_show, unc_show):
+#         x0, y0, x1, y1 = box
+#         left, top, right, bottom = u
+
+#         ax.add_patch(
+#             plt.Rectangle(
+#                 (x0, y0),
+#                 x1 - x0,
+#                 y1 - y0,
+#                 fill=False,
+#                 edgecolor='lime',
+#                 linewidth=2
+#             )
+#         )
+
+#         kw = dict(
+#             color='white',
+#             fontsize=5,
+#             ha='center',
+#             va='center',
+#             bbox=dict(facecolor='black', alpha=0.55, pad=0.3),
+#         )
+
+#         ax.text((x0 + x1) / 2, y0, f'{top * 100:.0f}%', **kw)
+#         ax.text((x0 + x1) / 2, y1, f'{bottom * 100:.0f}%', **kw)
+#         ax.text(x0, (y0 + y1) / 2, f'{left * 100:.0f}%', rotation=90, **kw)
+#         ax.text(x1, (y0 + y1) / 2, f'{right * 100:.0f}%', rotation=90, **kw)
+
+#     plt.title(f'Top-{top_k} highest mean box uncertainty')
+#     plt.show()
+
+def show_uncertainty_results(
+    model,
+    data_loader,
+    device,
+    item_idx=0,
+    top_k=None,
+):
+
     model.eval()
     batch = cd.to_device(next(iter(data_loader)), device)
 
     with torch.no_grad():
-        outputs = model(batch['inputs'])
+        outputs = model(batch["inputs"])
 
-    o = cd.asnumpy(outputs)
-    images = cd.asnumpy(batch['inputs'])
+    output = cd.asnumpy(outputs)
+    images = cd.asnumpy(batch["inputs"])
+
+    if item_idx < 0 or item_idx >= len(images):
+        raise IndexError(
+            f"item_idx={item_idx} is outside the batch range "
+            f"0..{len(images) - 1}."
+        )
 
     image = Data.unmap(images[item_idx].transpose(1, 2, 0))
-    contours = o['contours'][item_idx]
-    boxes = o['boxes'][item_idx]
-    unc = o['box_uncertainties'][item_idx]
+    contours = output["contours"][item_idx]
+    boxes = output["boxes"][item_idx]
+    uncertainties = output["box_uncertainties"][item_idx]
 
-    if unc is None or len(unc) == 0:
-        print('No box_uncertainties. Check uncertainty_head=True.')
+    if uncertainties is None or len(uncertainties) == 0:
+        print(
+            "No box uncertainties found. "
+            "Check that uncertainty_head=True and detections exist."
+        )
         return
 
-    mean_unc = unc.mean(axis=1)
-    keep = np.argsort(mean_unc)[-top_k:]
+    mean_uncertainties = uncertainties.mean(axis=1)
+    num_boxes = len(mean_uncertainties)
+
+    if top_k is None:
+        keep = np.arange(num_boxes)
+        title = f"All detected bounding boxes ({num_boxes})"
+    else:
+        if not isinstance(top_k, int) or top_k <= 0:
+            raise ValueError("top_k must be a positive integer or None.")
+
+        top_k = min(top_k, num_boxes)
+        keep = np.argsort(mean_uncertainties)[-top_k:]
+        title = f"Top-{top_k} highest mean box uncertainty"
 
     contours_show = contours[keep]
     boxes_show = boxes[keep]
-    unc_show = unc[keep]
+    uncertainties_show = uncertainties[keep]
 
     plt.figure(figsize=(12, 12))
+
     cd.vis.show_detection(
         image,
         contours=contours_show,
-        contour_linestyle='-'
+        contour_linestyle="-",
     )
 
     ax = plt.gca()
 
-    for box, u in zip(boxes_show, unc_show):
+    for box, uncertainty in zip(boxes_show, uncertainties_show):
         x0, y0, x1, y1 = box
-        left, top, right, bottom = u
+        left, top, right, bottom = uncertainty
 
         ax.add_patch(
             plt.Rectangle(
@@ -740,27 +837,53 @@ def show_uncertainty_results(model, data_loader, device, item_idx=0, top_k=2):
                 x1 - x0,
                 y1 - y0,
                 fill=False,
-                edgecolor='lime',
-                linewidth=2
+                edgecolor="lime",
+                linewidth=2,
             )
         )
 
-        kw = dict(
-            color='white',
-            fontsize=5,
-            ha='center',
-            va='center',
-            bbox=dict(facecolor='black', alpha=0.55, pad=0.3),
+        text_options = {
+            "color": "white",
+            "fontsize": 5,
+            "ha": "center",
+            "va": "center",
+            "bbox": {
+                "facecolor": "black",
+                "alpha": 0.55,
+                "pad": 0.3,
+            },
+        }
+
+        ax.text(
+            (x0 + x1) / 2,
+            y0,
+            f"{top * 100:.0f}%",
+            **text_options,
+        )
+        ax.text(
+            (x0 + x1) / 2,
+            y1,
+            f"{bottom * 100:.0f}%",
+            **text_options,
+        )
+        ax.text(
+            x0,
+            (y0 + y1) / 2,
+            f"{left * 100:.0f}%",
+            rotation=90,
+            **text_options,
+        )
+        ax.text(
+            x1,
+            (y0 + y1) / 2,
+            f"{right * 100:.0f}%",
+            rotation=90,
+            **text_options,
         )
 
-        ax.text((x0 + x1) / 2, y0, f'{top * 100:.0f}%', **kw)
-        ax.text((x0 + x1) / 2, y1, f'{bottom * 100:.0f}%', **kw)
-        ax.text(x0, (y0 + y1) / 2, f'{left * 100:.0f}%', rotation=90, **kw)
-        ax.text(x1, (y0 + y1) / 2, f'{right * 100:.0f}%', rotation=90, **kw)
-
-    plt.title(f'Top-{top_k} highest mean box uncertainty')
+    plt.title(title)
+    plt.tight_layout()
     plt.show()
-
 
 # ### Training loop
 # This basic training loop runs for a specified number of epochs and plots an example prediction from the test dataset every now and then.
