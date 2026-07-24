@@ -138,8 +138,8 @@ conf = cd.Config(
     scheduler={'StepLR': {'step_size': 5, 'gamma': .5}},
 
     # training
-    epochs=20,
-    steps_per_epoch=36,
+    epochs=100,
+    steps_per_epoch=512,
     batch_size=8,
     amp=torch.cuda.is_available(),  # Automatic Mixed Precision (https://pytorch.org/docs/stable/amp.html)
 
