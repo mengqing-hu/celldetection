@@ -22,6 +22,12 @@ export PYTHONPATH="$PROJECT:${PYTHONPATH:-}"
 export MPLBACKEND=Agg
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-12}"
 
+# MLflow: the Python script defaults to $PROJECT/mlflow.db as well. These
+# variables make the SLURM experiment and run names explicit and overridable.
+export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-sqlite:///$PROJECT/mlflow.db}"
+export MLFLOW_EXPERIMENT_NAME="${MLFLOW_EXPERIMENT_NAME:-celldetection-mydata-uncertainty}"
+export MLFLOW_RUN_NAME="${MLFLOW_RUN_NAME:-uncertainty-slurm-${SLURM_JOB_ID:-local}}"
+
 cd "$PROJECT/demos/code"
 
 echo "Job ID: ${SLURM_JOB_ID:-local}"
@@ -34,13 +40,19 @@ echo "Start time: $(date)"
 python - <<'PY'
 import torch
 import celldetection as cd
+import mlflow
 
 print("torch:", torch.__version__)
 print("celldetection:", cd.__version__)
+print("mlflow:", mlflow.__version__)
 print("cuda available:", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("gpu:", torch.cuda.get_device_name(0))
 PY
+
+echo "MLflow tracking URI: $MLFLOW_TRACKING_URI"
+echo "MLflow experiment: $MLFLOW_EXPERIMENT_NAME"
+echo "MLflow run name: $MLFLOW_RUN_NAME"
 
 python mydata_uncertainty.py
 

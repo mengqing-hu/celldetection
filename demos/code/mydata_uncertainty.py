@@ -61,6 +61,10 @@ from tqdm import tqdm
 import numpy as np
 import os
 import sys
+import json
+import platform
+import socket
+import mlflow
 sys.path.insert(0, '.')
 from my_dataset import MyDatasetTrain, MyDatasetVal, MyDatasetTest
 
@@ -85,55 +89,6 @@ from pathlib import Path
 from datetime import datetime
 import sys
 from matplotlib import pyplot as plt
-
-output_dir = Path("./output/mydata_uncertainty_output")
-output_dir.mkdir(parents=True, exist_ok=True)
-
-fig_dir = output_dir / "all_figures"
-fig_dir.mkdir(parents=True, exist_ok=True)
-
-log_path = output_dir / "run.log"
-
-class Tee:
-    def __init__(self, *streams):
-        self.streams = streams
-
-    def write(self, data):
-        for s in self.streams:
-            s.write(data)
-            s.flush()
-
-    def flush(self):
-        for s in self.streams:
-            s.flush()
-
-_log_file = open(log_path, "a", buffering=1)
-sys.stdout = Tee(sys.__stdout__, _log_file)
-sys.stderr = Tee(sys.__stderr__, _log_file)
-
-_original_show = plt.show
-_fig_counter = {"n": 0}
-
-def save_and_show(*args, **kwargs):
-    for num in plt.get_fignums():
-        fig = plt.figure(num)
-        _fig_counter["n"] += 1
-        fig.savefig(
-            fig_dir / f"figure_{_fig_counter['n']:03d}.png",
-            dpi=200,
-            bbox_inches="tight"
-        )
-
-    result = _original_show(*args, **kwargs)
-    plt.close("all")
-    return result
-
-plt.show = save_and_show
-
-print(f"Output directory: {output_dir.resolve()}")
-print(f"Logging to: {log_path.resolve()}")
-print(f"Saving all figures to: {fig_dir.resolve()}")
-print(f"Started at: {datetime.now()}")
 
 
 # ## 2. The configuration
@@ -198,6 +153,116 @@ conf = cd.Config(
 print(conf)
 
 
+# ## MLflow experiment tracking
+
+
+def flatten_params(values, prefix=''):
+    """Flatten nested config values into MLflow-friendly parameters."""
+    flattened = {}
+    for key, value in values.items():
+        name = f'{prefix}.{key}' if prefix else str(key)
+        if isinstance(value, dict):
+            flattened.update(flatten_params(value, name))
+        elif isinstance(value, (list, tuple)):
+            flattened[name] = json.dumps(value)
+        else:
+            flattened[name] = value
+    return flattened
+
+
+project_dir = Path(__file__).resolve().parents[2]
+default_tracking_uri = f"sqlite:///{project_dir / 'mlflow.db'}"
+tracking_uri = os.environ.get('MLFLOW_TRACKING_URI', default_tracking_uri)
+experiment_name = os.environ.get('MLFLOW_EXPERIMENT_NAME', 'celldetection-mydata-uncertainty')
+run_name = os.environ.get('MLFLOW_RUN_NAME', datetime.now().strftime('uncertainty-%Y%m%d-%H%M%S'))
+
+mlflow.set_tracking_uri(tracking_uri)
+mlflow.set_experiment(experiment_name)
+mlflow.start_run(run_name=run_name)
+run_id = mlflow.active_run().info.run_id
+
+# Keep every run's local files isolated. MLflow also stores each run's
+# uploaded artifacts separately, so neither local nor tracked files collide.
+output_root = Path("./output/mydata_uncertainty_output")
+output_dir = output_root / run_id
+fig_dir = output_dir / "all_figures"
+fig_dir.mkdir(parents=True, exist_ok=True)
+log_path = output_dir / "run.log"
+
+
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            stream.write(data)
+            stream.flush()
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+
+_log_file = open(log_path, "a", buffering=1)
+sys.stdout = Tee(sys.__stdout__, _log_file)
+sys.stderr = Tee(sys.__stderr__, _log_file)
+
+_original_show = plt.show
+_fig_counter = {"n": 0}
+
+
+def save_and_show(*args, **kwargs):
+    for num in plt.get_fignums():
+        fig = plt.figure(num)
+        _fig_counter["n"] += 1
+        fig.savefig(
+            fig_dir / f"figure_{_fig_counter['n']:03d}.png",
+            dpi=200,
+            bbox_inches="tight"
+        )
+
+    result = _original_show(*args, **kwargs)
+    plt.close("all")
+    return result
+
+
+plt.show = save_and_show
+
+_original_excepthook = sys.excepthook
+
+
+def mlflow_excepthook(exc_type, exc_value, exc_traceback):
+    """Mark an MLflow run as failed when the script exits with an uncaught error."""
+    if mlflow.active_run() is not None:
+        mlflow.end_run(status='FAILED')
+    _original_excepthook(exc_type, exc_value, exc_traceback)
+
+
+sys.excepthook = mlflow_excepthook
+mlflow.log_params(flatten_params(conf.to_dict()))
+mlflow.set_tags({
+    'model': conf.cpn,
+    'task': 'cell-instance-segmentation',
+    'experiment_type': 'uncertainty',
+    'hostname': socket.gethostname(),
+    'platform': platform.platform(),
+    'torch_version': torch.__version__,
+    'celldetection_version': cd.__version__,
+})
+
+config_path = output_dir / 'config.json'
+conf.to_json(config_path)
+
+print(f"MLflow tracking URI: {tracking_uri}")
+print(f"MLflow experiment: {experiment_name}")
+print(f"MLflow run: {run_id}")
+print(f"Output directory: {output_dir.resolve()}")
+print(f"Logging to: {log_path.resolve()}")
+print(f"Saving all figures to: {fig_dir.resolve()}")
+print(f"Started at: {datetime.now()}")
+
+
 # ## 3. The data
 # <hr/>
 # 
@@ -215,6 +280,12 @@ test_mydata = MyDatasetTest('../mydata')
 print(f"Training set: {len(train_mydata)} samples")
 print(f"Validation set: {len(val_mydata)} samples")
 print(f"Test set: {len(test_mydata)} samples")
+
+mlflow.log_params({
+    'dataset.train_samples': len(train_mydata),
+    'dataset.validation_samples': len(val_mydata),
+    'dataset.test_samples': len(test_mydata),
+})
 
 
 # ### Transformations with [Albumentations](https://albumentations.ai/)
@@ -719,6 +790,12 @@ for epoch in range(1, conf.epochs + 1):
     train_losses.append(train_loss)
     val_losses.append(val_loss)
 
+    mlflow.log_metrics({
+        'train_loss': train_loss,
+        'val_loss': val_loss,
+        'learning_rate': optimizer.param_groups[0]['lr'],
+    }, step=epoch)
+
     print(f'Epoch {epoch:03d} | train_loss: {train_loss:.4f} | val_loss: {val_loss:.4f}')
 
     if epoch % 10 == 0:
@@ -792,8 +869,11 @@ def evaluate(model, data_loader, device, use_amp, desc='Eval', progress=True, ti
             prediction = cd.data.contours2labels(out['contours'][idx], target.shape[:2])
             results.append(cd.data.LabelMatcher(prediction, target))
     if len(times) > 0:
-        cd.print_timing('Average prediction delay', np.mean(times))
-        print("FPS:", ' ' * 66, (1 / np.mean(times)).round(2), 'frames')
+        mean_delay = float(np.mean(times))
+        fps = float(1 / mean_delay)
+        cd.print_timing('Average prediction delay', mean_delay)
+        print("FPS:", ' ' * 66, np.round(fps, 2), 'frames')
+        mlflow.log_metrics({'mean_prediction_delay_seconds': mean_delay, 'fps': fps})
     return results
 
 
@@ -809,7 +889,7 @@ def validate_(model, data_loader, device, use_amp):
             res = evaluate(model, val_loader, conf.device, use_amp,
                            desc=f'Validate (score thresh: {model.score_thresh}, nms_thresh: {model.nms_thresh})')
             f1 = avg_iou_score(res, verbose=False)
-            if f1 > best_f1:
+            if f1 >= best_f1:
                 best_f1 = f1
                 best_settings['score_thresh'] = model.score_thresh
                 best_settings['nms_thresh'] = model.nms_thresh
@@ -817,13 +897,19 @@ def validate_(model, data_loader, device, use_amp):
         print(f'Best {k}: {v}')
         setattr(model, k, v)
     print("Val f1 score:", best_f1)
+    mlflow.log_metrics({
+        'best_validation_f1': float(best_f1),
+        'best_score_thresh': float(best_settings['score_thresh']),
+        'best_nms_thresh': float(best_settings['nms_thresh']),
+    })
+    return best_f1, best_settings
 
 
 # In[30]:
 
 
 # validate_(model, val_loader, conf.device, conf.amp)
-validate_(model, val_loader, conf.device, conf.amp)
+best_validation_f1, best_settings = validate_(model, val_loader, conf.device, conf.amp)
 
 
 # ### Testing and inference speed
@@ -845,6 +931,11 @@ val_results = evaluate(model, val_loader, conf.device, conf.amp, timing=True)
 
 
 final_f1 = avg_iou_score(val_results)
+mlflow.log_metric('final_avg_f1', float(final_f1))
+
+for iou_thresh in (.5, .6, .7, .8, .9):
+    val_results.iou_thresh = iou_thresh
+    mlflow.log_metric(f'validation_f1_iou_{int(iou_thresh * 100)}', float(val_results.avg_f1))
 
 
 # In[33]:
@@ -930,6 +1021,21 @@ def plot_iou_metrics_and_counts(results, iou_threshs=np.arange(0.1, 1.0, 0.1), f
 
 
 iou_plot_data = plot_iou_metrics_and_counts(val_results)
+
+
+# Save the final model and collect all generated outputs in the MLflow run.
+checkpoint_path = output_dir / 'model_final.pth'
+torch.save({
+    'model_state_dict': model.state_dict(),
+    'config': conf.to_dict(),
+    'best_settings': best_settings,
+    'final_avg_f1': float(final_f1),
+}, checkpoint_path)
+
+_log_file.flush()
+mlflow.log_artifacts(str(output_dir), artifact_path='outputs')
+mlflow.end_run(status='FINISHED')
+print(f"MLflow run finished. Open the UI with: mlflow ui --backend-store-uri '{tracking_uri}'")
 
 
 # ## 7. Conclusion
