@@ -61,9 +61,7 @@ from tqdm import tqdm
 import numpy as np
 import os
 import sys
-import json
-import platform
-import socket
+import atexit
 import mlflow
 sys.path.insert(0, '.')
 from my_dataset import MyDatasetTrain, MyDatasetVal, MyDatasetTest
@@ -89,6 +87,111 @@ from pathlib import Path
 from datetime import datetime
 import sys
 from matplotlib import pyplot as plt
+
+# Store MLflow data in the project by default. Set MLFLOW_TRACKING_URI to
+# override this, for example when using a remote Tracking Server.
+project_dir = Path(__file__).resolve().parents[2]
+default_tracking_dir = project_dir / "mlruns"
+default_tracking_dir.mkdir(parents=True, exist_ok=True)
+default_artifact_dir = default_tracking_dir / "artifacts"
+default_artifact_dir.mkdir(parents=True, exist_ok=True)
+tracking_uri = os.environ.get(
+    "MLFLOW_TRACKING_URI",
+    f"sqlite:///{default_tracking_dir.resolve() / 'mlflow.db'}",
+)
+mlflow.set_tracking_uri(tracking_uri)
+experiment_name = os.environ.get(
+    "MLFLOW_EXPERIMENT_NAME",
+    "celldetection-mydata-uncertainty",
+)
+if mlflow.get_experiment_by_name(experiment_name) is None:
+    mlflow.create_experiment(
+        experiment_name,
+        artifact_location=default_artifact_dir.resolve().as_uri(),
+    )
+mlflow.set_experiment(experiment_name)
+
+slurm_job_id = os.environ.get("SLURM_JOB_ID")
+run_name = (
+    f"uncertainty-slurm-{slurm_job_id}"
+    if slurm_job_id
+    else f"uncertainty-{datetime.now():%Y%m%d-%H%M%S}"
+)
+mlflow_run = mlflow.start_run(
+    run_name=run_name,
+    tags={
+        "experiment_type": "uncertainty",
+        "slurm_job_id": slurm_job_id or "local",
+        "compute_node": os.environ.get("SLURMD_NODENAME", "local"),
+    },
+)
+run_id = mlflow_run.info.run_id
+_mlflow_run_finished = False
+
+def _finish_mlflow_run(status="FINISHED"):
+    global _mlflow_run_finished
+    if not _mlflow_run_finished and mlflow.active_run() is not None:
+        mlflow.end_run(status=status)
+        _mlflow_run_finished = True
+
+def _mlflow_exception_hook(exc_type, exc_value, exc_traceback):
+    _finish_mlflow_run("FAILED")
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+sys.excepthook = _mlflow_exception_hook
+atexit.register(_finish_mlflow_run)
+
+output_dir = Path("./output/mydata_uncertainty_output") / run_id
+output_dir.mkdir(parents=True, exist_ok=True)
+
+fig_dir = output_dir / "all_figures"
+fig_dir.mkdir(parents=True, exist_ok=True)
+
+log_path = output_dir / "run.log"
+
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+            s.flush()
+
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+_log_file = open(log_path, "a", buffering=1)
+sys.stdout = Tee(sys.__stdout__, _log_file)
+sys.stderr = Tee(sys.__stderr__, _log_file)
+
+_original_show = plt.show
+_fig_counter = {"n": 0}
+
+def save_and_show(*args, **kwargs):
+    for num in plt.get_fignums():
+        fig = plt.figure(num)
+        _fig_counter["n"] += 1
+        fig.savefig(
+            fig_dir / f"figure_{_fig_counter['n']:03d}.png",
+            dpi=200,
+            bbox_inches="tight"
+        )
+
+    result = _original_show(*args, **kwargs)
+    plt.close("all")
+    return result
+
+plt.show = save_and_show
+
+print(f"Output directory: {output_dir.resolve()}")
+print(f"Logging to: {log_path.resolve()}")
+print(f"Saving all figures to: {fig_dir.resolve()}")
+print(f"MLflow tracking URI: {mlflow.get_tracking_uri()}")
+print(f"MLflow experiment: {mlflow.get_experiment(mlflow_run.info.experiment_id).name}")
+print(f"MLflow run ID: {run_id}")
+print(f"Started at: {datetime.now()}")
 
 
 # ## 2. The configuration
@@ -138,9 +241,6 @@ conf = cd.Config(
     scheduler={'StepLR': {'step_size': 5, 'gamma': .5}},
 
     # training
-    # epochs=100,
-    # steps_per_epoch=512,
-    # batch_size=8,
     epochs=20,
     steps_per_epoch=36,
     batch_size=8,
@@ -154,116 +254,6 @@ conf = cd.Config(
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 )
 print(conf)
-
-
-# ## MLflow experiment tracking
-
-
-def flatten_params(values, prefix=''):
-    """Flatten nested config values into MLflow-friendly parameters."""
-    flattened = {}
-    for key, value in values.items():
-        name = f'{prefix}.{key}' if prefix else str(key)
-        if isinstance(value, dict):
-            flattened.update(flatten_params(value, name))
-        elif isinstance(value, (list, tuple)):
-            flattened[name] = json.dumps(value)
-        else:
-            flattened[name] = value
-    return flattened
-
-
-project_dir = Path(__file__).resolve().parents[2]
-default_tracking_uri = f"sqlite:///{project_dir / 'mlflow.db'}"
-tracking_uri = os.environ.get('MLFLOW_TRACKING_URI', default_tracking_uri)
-experiment_name = os.environ.get('MLFLOW_EXPERIMENT_NAME', 'celldetection-mydata-uncertainty')
-run_name = os.environ.get('MLFLOW_RUN_NAME', datetime.now().strftime('uncertainty-%Y%m%d-%H%M%S'))
-
-mlflow.set_tracking_uri(tracking_uri)
-mlflow.set_experiment(experiment_name)
-mlflow.start_run(run_name=run_name)
-run_id = mlflow.active_run().info.run_id
-
-# Keep every run's local files isolated. MLflow also stores each run's
-# uploaded artifacts separately, so neither local nor tracked files collide.
-output_root = Path("./output/mydata_uncertainty_output")
-output_dir = output_root / run_id
-fig_dir = output_dir / "all_figures"
-fig_dir.mkdir(parents=True, exist_ok=True)
-log_path = output_dir / "run.log"
-
-
-class Tee:
-    def __init__(self, *streams):
-        self.streams = streams
-
-    def write(self, data):
-        for stream in self.streams:
-            stream.write(data)
-            stream.flush()
-
-    def flush(self):
-        for stream in self.streams:
-            stream.flush()
-
-
-_log_file = open(log_path, "a", buffering=1)
-sys.stdout = Tee(sys.__stdout__, _log_file)
-sys.stderr = Tee(sys.__stderr__, _log_file)
-
-_original_show = plt.show
-_fig_counter = {"n": 0}
-
-
-def save_and_show(*args, **kwargs):
-    for num in plt.get_fignums():
-        fig = plt.figure(num)
-        _fig_counter["n"] += 1
-        fig.savefig(
-            fig_dir / f"figure_{_fig_counter['n']:03d}.png",
-            dpi=200,
-            bbox_inches="tight"
-        )
-
-    result = _original_show(*args, **kwargs)
-    plt.close("all")
-    return result
-
-
-plt.show = save_and_show
-
-_original_excepthook = sys.excepthook
-
-
-def mlflow_excepthook(exc_type, exc_value, exc_traceback):
-    """Mark an MLflow run as failed when the script exits with an uncaught error."""
-    if mlflow.active_run() is not None:
-        mlflow.end_run(status='FAILED')
-    _original_excepthook(exc_type, exc_value, exc_traceback)
-
-
-sys.excepthook = mlflow_excepthook
-mlflow.log_params(flatten_params(conf.to_dict()))
-mlflow.set_tags({
-    'model': conf.cpn,
-    'task': 'cell-instance-segmentation',
-    'experiment_type': 'uncertainty',
-    'hostname': socket.gethostname(),
-    'platform': platform.platform(),
-    'torch_version': torch.__version__,
-    'celldetection_version': cd.__version__,
-})
-
-config_path = output_dir / 'config.json'
-conf.to_json(config_path)
-
-print(f"MLflow tracking URI: {tracking_uri}")
-print(f"MLflow experiment: {experiment_name}")
-print(f"MLflow run: {run_id}")
-print(f"Output directory: {output_dir.resolve()}")
-print(f"Logging to: {log_path.resolve()}")
-print(f"Saving all figures to: {fig_dir.resolve()}")
-print(f"Started at: {datetime.now()}")
 
 
 # ## 3. The data
@@ -284,11 +274,34 @@ print(f"Training set: {len(train_mydata)} samples")
 print(f"Validation set: {len(val_mydata)} samples")
 print(f"Test set: {len(test_mydata)} samples")
 
+config_path = output_dir / "config.json"
+conf.to_json(config_path)
 mlflow.log_params({
-    'dataset.train_samples': len(train_mydata),
-    'dataset.validation_samples': len(val_mydata),
-    'dataset.test_samples': len(test_mydata),
+    "cpn": conf.cpn,
+    "epochs": conf.epochs,
+    "steps_per_epoch": conf.steps_per_epoch,
+    "batch_size": conf.batch_size,
+    "test_batch_size": conf.test_batch_size,
+    "optimizer": str(conf.optimizer),
+    "scheduler": str(conf.scheduler),
+    "order": conf.order,
+    "samples": conf.samples,
+    "score_thresh": conf.score_thresh,
+    "nms_thresh": conf.nms_thresh,
+    "uncertainty_head": conf.uncertainty_head,
+    "uncertainty_nms": conf.uncertainty_nms,
+    "uncertainty_factor": conf.uncertainty_factor,
+    "device": conf.device,
+    "amp": conf.amp,
+    "train_samples": len(train_mydata),
+    "validation_samples": len(val_mydata),
+    "test_samples": len(test_mydata),
 })
+mlflow.set_tags({
+    "pytorch_version": torch.__version__,
+    "celldetection_version": cd.__version__,
+})
+mlflow.log_artifact(str(config_path), artifact_path="outputs")
 
 
 # ### Transformations with [Albumentations](https://albumentations.ai/)
@@ -698,138 +711,44 @@ def show_results(model, val_loader, device):
 # In[25]:
 
 
-# def show_uncertainty_results(model, data_loader, device, item_idx=0, top_k=2):
-#     model.eval()
-#     batch = cd.to_device(next(iter(data_loader)), device)
-
-#     with torch.no_grad():
-#         outputs = model(batch['inputs'])
-
-#     o = cd.asnumpy(outputs)
-#     images = cd.asnumpy(batch['inputs'])
-
-#     image = Data.unmap(images[item_idx].transpose(1, 2, 0))
-#     contours = o['contours'][item_idx]
-#     boxes = o['boxes'][item_idx]
-#     unc = o['box_uncertainties'][item_idx]
-
-#     if unc is None or len(unc) == 0:
-#         print('No box_uncertainties. Check uncertainty_head=True.')
-#         return
-
-#     mean_unc = unc.mean(axis=1)
-#     keep = np.argsort(mean_unc)[-top_k:]
-
-#     contours_show = contours[keep]
-#     boxes_show = boxes[keep]
-#     unc_show = unc[keep]
-
-#     plt.figure(figsize=(12, 12))
-#     cd.vis.show_detection(
-#         image,
-#         contours=contours_show,
-#         contour_linestyle='-'
-#     )
-
-#     ax = plt.gca()
-
-#     for box, u in zip(boxes_show, unc_show):
-#         x0, y0, x1, y1 = box
-#         left, top, right, bottom = u
-
-#         ax.add_patch(
-#             plt.Rectangle(
-#                 (x0, y0),
-#                 x1 - x0,
-#                 y1 - y0,
-#                 fill=False,
-#                 edgecolor='lime',
-#                 linewidth=2
-#             )
-#         )
-
-#         kw = dict(
-#             color='white',
-#             fontsize=5,
-#             ha='center',
-#             va='center',
-#             bbox=dict(facecolor='black', alpha=0.55, pad=0.3),
-#         )
-
-#         ax.text((x0 + x1) / 2, y0, f'{top * 100:.0f}%', **kw)
-#         ax.text((x0 + x1) / 2, y1, f'{bottom * 100:.0f}%', **kw)
-#         ax.text(x0, (y0 + y1) / 2, f'{left * 100:.0f}%', rotation=90, **kw)
-#         ax.text(x1, (y0 + y1) / 2, f'{right * 100:.0f}%', rotation=90, **kw)
-
-#     plt.title(f'Top-{top_k} highest mean box uncertainty')
-#     plt.show()
-
-def show_uncertainty_results(
-    model,
-    data_loader,
-    device,
-    item_idx=0,
-    top_k=None,
-):
-
+def show_uncertainty_results(model, data_loader, device, item_idx=0, top_k=2):
     model.eval()
     batch = cd.to_device(next(iter(data_loader)), device)
 
     with torch.no_grad():
-        outputs = model(batch["inputs"])
+        outputs = model(batch['inputs'])
 
-    output = cd.asnumpy(outputs)
-    images = cd.asnumpy(batch["inputs"])
-
-    if item_idx < 0 or item_idx >= len(images):
-        raise IndexError(
-            f"item_idx={item_idx} is outside the batch range "
-            f"0..{len(images) - 1}."
-        )
+    o = cd.asnumpy(outputs)
+    images = cd.asnumpy(batch['inputs'])
 
     image = Data.unmap(images[item_idx].transpose(1, 2, 0))
-    contours = output["contours"][item_idx]
-    boxes = output["boxes"][item_idx]
-    uncertainties = output["box_uncertainties"][item_idx]
+    contours = o['contours'][item_idx]
+    boxes = o['boxes'][item_idx]
+    unc = o['box_uncertainties'][item_idx]
 
-    if uncertainties is None or len(uncertainties) == 0:
-        print(
-            "No box uncertainties found. "
-            "Check that uncertainty_head=True and detections exist."
-        )
+    if unc is None or len(unc) == 0:
+        print('No box_uncertainties. Check uncertainty_head=True.')
         return
 
-    mean_uncertainties = uncertainties.mean(axis=1)
-    num_boxes = len(mean_uncertainties)
-
-    if top_k is None:
-        keep = np.arange(num_boxes)
-        title = f"All detected bounding boxes ({num_boxes})"
-    else:
-        if not isinstance(top_k, int) or top_k <= 0:
-            raise ValueError("top_k must be a positive integer or None.")
-
-        top_k = min(top_k, num_boxes)
-        keep = np.argsort(mean_uncertainties)[-top_k:]
-        title = f"Top-{top_k} highest mean box uncertainty"
+    mean_unc = unc.mean(axis=1)
+    keep = np.argsort(mean_unc)[-top_k:]
 
     contours_show = contours[keep]
     boxes_show = boxes[keep]
-    uncertainties_show = uncertainties[keep]
+    unc_show = unc[keep]
 
     plt.figure(figsize=(12, 12))
-
     cd.vis.show_detection(
         image,
         contours=contours_show,
-        contour_linestyle="-",
+        contour_linestyle='-'
     )
 
     ax = plt.gca()
 
-    for box, uncertainty in zip(boxes_show, uncertainties_show):
+    for box, u in zip(boxes_show, unc_show):
         x0, y0, x1, y1 = box
-        left, top, right, bottom = uncertainty
+        left, top, right, bottom = u
 
         ax.add_patch(
             plt.Rectangle(
@@ -837,53 +756,27 @@ def show_uncertainty_results(
                 x1 - x0,
                 y1 - y0,
                 fill=False,
-                edgecolor="lime",
-                linewidth=2,
+                edgecolor='lime',
+                linewidth=2
             )
         )
 
-        text_options = {
-            "color": "white",
-            "fontsize": 5,
-            "ha": "center",
-            "va": "center",
-            "bbox": {
-                "facecolor": "black",
-                "alpha": 0.55,
-                "pad": 0.3,
-            },
-        }
-
-        ax.text(
-            (x0 + x1) / 2,
-            y0,
-            f"{top * 100:.0f}%",
-            **text_options,
-        )
-        ax.text(
-            (x0 + x1) / 2,
-            y1,
-            f"{bottom * 100:.0f}%",
-            **text_options,
-        )
-        ax.text(
-            x0,
-            (y0 + y1) / 2,
-            f"{left * 100:.0f}%",
-            rotation=90,
-            **text_options,
-        )
-        ax.text(
-            x1,
-            (y0 + y1) / 2,
-            f"{right * 100:.0f}%",
-            rotation=90,
-            **text_options,
+        kw = dict(
+            color='white',
+            fontsize=5,
+            ha='center',
+            va='center',
+            bbox=dict(facecolor='black', alpha=0.55, pad=0.3),
         )
 
-    plt.title(title)
-    plt.tight_layout()
+        ax.text((x0 + x1) / 2, y0, f'{top * 100:.0f}%', **kw)
+        ax.text((x0 + x1) / 2, y1, f'{bottom * 100:.0f}%', **kw)
+        ax.text(x0, (y0 + y1) / 2, f'{left * 100:.0f}%', rotation=90, **kw)
+        ax.text(x1, (y0 + y1) / 2, f'{right * 100:.0f}%', rotation=90, **kw)
+
+    plt.title(f'Top-{top_k} highest mean box uncertainty')
     plt.show()
+
 
 # ### Training loop
 # This basic training loop runs for a specified number of epochs and plots an example prediction from the test dataset every now and then.
@@ -912,12 +805,14 @@ for epoch in range(1, conf.epochs + 1):
 
     train_losses.append(train_loss)
     val_losses.append(val_loss)
-
-    mlflow.log_metrics({
-        'train_loss': train_loss,
-        'val_loss': val_loss,
-        'learning_rate': optimizer.param_groups[0]['lr'],
-    }, step=epoch)
+    mlflow.log_metrics(
+        {
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "learning_rate": optimizer.param_groups[0]["lr"],
+        },
+        step=epoch,
+    )
 
     print(f'Epoch {epoch:03d} | train_loss: {train_loss:.4f} | val_loss: {val_loss:.4f}')
 
@@ -992,11 +887,8 @@ def evaluate(model, data_loader, device, use_amp, desc='Eval', progress=True, ti
             prediction = cd.data.contours2labels(out['contours'][idx], target.shape[:2])
             results.append(cd.data.LabelMatcher(prediction, target))
     if len(times) > 0:
-        mean_delay = float(np.mean(times))
-        fps = float(1 / mean_delay)
-        cd.print_timing('Average prediction delay', mean_delay)
-        print("FPS:", ' ' * 66, np.round(fps, 2), 'frames')
-        mlflow.log_metrics({'mean_prediction_delay_seconds': mean_delay, 'fps': fps})
+        cd.print_timing('Average prediction delay', np.mean(times))
+        print("FPS:", ' ' * 66, (1 / np.mean(times)).round(2), 'frames')
     return results
 
 
@@ -1012,7 +904,7 @@ def validate_(model, data_loader, device, use_amp):
             res = evaluate(model, val_loader, conf.device, use_amp,
                            desc=f'Validate (score thresh: {model.score_thresh}, nms_thresh: {model.nms_thresh})')
             f1 = avg_iou_score(res, verbose=False)
-            if f1 >= best_f1:
+            if f1 > best_f1:
                 best_f1 = f1
                 best_settings['score_thresh'] = model.score_thresh
                 best_settings['nms_thresh'] = model.nms_thresh
@@ -1020,11 +912,6 @@ def validate_(model, data_loader, device, use_amp):
         print(f'Best {k}: {v}')
         setattr(model, k, v)
     print("Val f1 score:", best_f1)
-    mlflow.log_metrics({
-        'best_validation_f1': float(best_f1),
-        'best_score_thresh': float(best_settings['score_thresh']),
-        'best_nms_thresh': float(best_settings['nms_thresh']),
-    })
     return best_f1, best_settings
 
 
@@ -1032,7 +919,10 @@ def validate_(model, data_loader, device, use_amp):
 
 
 # validate_(model, val_loader, conf.device, conf.amp)
-best_validation_f1, best_settings = validate_(model, val_loader, conf.device, conf.amp)
+best_val_f1, best_settings = validate_(model, val_loader, conf.device, conf.amp)
+mlflow.log_metric("best_validation_f1", float(best_val_f1))
+for name, value in best_settings.items():
+    mlflow.log_metric(f"best_{name}", float(value))
 
 
 # ### Testing and inference speed
@@ -1054,11 +944,6 @@ val_results = evaluate(model, val_loader, conf.device, conf.amp, timing=True)
 
 
 final_f1 = avg_iou_score(val_results)
-mlflow.log_metric('final_avg_f1', float(final_f1))
-
-for iou_thresh in (.5, .6, .7, .8, .9):
-    val_results.iou_thresh = iou_thresh
-    mlflow.log_metric(f'validation_f1_iou_{int(iou_thresh * 100)}', float(val_results.avg_f1))
 
 
 # In[33]:
@@ -1145,20 +1030,18 @@ def plot_iou_metrics_and_counts(results, iou_threshs=np.arange(0.1, 1.0, 0.1), f
 
 iou_plot_data = plot_iou_metrics_and_counts(val_results)
 
+mlflow.log_metric("final_mean_f1", float(final_f1))
+for tau, f1 in zip(
+    iou_plot_data["taus"],
+    iou_plot_data["sample_metrics"]["avg_f1"],
+):
+    mlflow.log_metric(f"f1_iou_{tau:.1f}", float(f1))
 
-# Save the final model and collect all generated outputs in the MLflow run.
-checkpoint_path = output_dir / 'model_final.pth'
-torch.save({
-    'model_state_dict': model.state_dict(),
-    'config': conf.to_dict(),
-    'best_settings': best_settings,
-    'final_avg_f1': float(final_f1),
-}, checkpoint_path)
-
-_log_file.flush()
-mlflow.log_artifacts(str(output_dir), artifact_path='outputs')
-mlflow.end_run(status='FINISHED')
-print(f"MLflow run finished. Open the UI with: mlflow ui --backend-store-uri '{tracking_uri}'")
+for stream in (sys.stdout, sys.stderr):
+    stream.flush()
+mlflow.log_artifacts(str(output_dir), artifact_path="outputs")
+_finish_mlflow_run("FINISHED")
+print(f"MLflow run completed: {run_id}")
 
 
 # ## 7. Conclusion

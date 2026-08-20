@@ -1,32 +1,28 @@
 #!/bin/bash
 #SBATCH --job-name=cpn-uncertainty
-#SBATCH --partition=capella
+#SBATCH --partition=gpu-a100
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=96G
-#SBATCH --time=14:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --time=2:00:00
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --error=slurm-%x-%j.err
 
 set -euo pipefail
 
 module purge
-module load release/25.06 GCCcore/13.3.0 Python/3.12.3 CUDA/12.8.0
+module load python/3.12.4 cuda/12.8
 
-PROJECT=/data/cat/ws/mehu311f-cpn_workspace_e1/celldetection
+PROJECT=/data/home2/hu09/project/celldetection
 source "$PROJECT/.venv/bin/activate"
 
 export PYTHONPATH="$PROJECT:${PYTHONPATH:-}"
 export MPLBACKEND=Agg
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-12}"
-
-# MLflow: the Python script defaults to $PROJECT/mlflow.db as well. These
-# variables make the SLURM experiment and run names explicit and overridable.
-export MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-sqlite:///$PROJECT/mlflow.db}"
-export MLFLOW_EXPERIMENT_NAME="${MLFLOW_EXPERIMENT_NAME:-celldetection-mydata-uncertainty}"
-export MLFLOW_RUN_NAME="${MLFLOW_RUN_NAME:-uncertainty-slurm-${SLURM_JOB_ID:-local}}"
+export MLFLOW_TRACKING_URI="sqlite:///$PROJECT/mlruns/mlflow.db"
+export MLFLOW_EXPERIMENT_NAME="celldetection-mydata-uncertainty"
 
 cd "$PROJECT/demos/code"
 
@@ -52,7 +48,6 @@ PY
 
 echo "MLflow tracking URI: $MLFLOW_TRACKING_URI"
 echo "MLflow experiment: $MLFLOW_EXPERIMENT_NAME"
-echo "MLflow run name: $MLFLOW_RUN_NAME"
 
 python mydata_uncertainty.py
 
