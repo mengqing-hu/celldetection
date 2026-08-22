@@ -1,0 +1,131 @@
+Fri Aug 21 19:57:24 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.158.01             Driver Version: 570.158.01     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A100-SXM4-80GB          On  |   00000000:81:00.0 Off |                    0 |
+| N/A   39C    P0             66W /  500W |       0MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+Python 3.12.4
+Config(
+  (uncertainty_head): True
+  (uncertainty_nms): True
+  (uncertainty_factor): 7.0
+  (directory): '/bigdata/haicu/starke88/data/from_hendrik_hessenkemper_fwdc/bubble_multicamera_for_paper'
+  (download_data): False
+  (in_channels): 1
+  (classes): 2
+  (shuffle): True
+  (bg_fg_dists): (0.8, 0.85)
+  (crop_size): None
+  (cpn): 'CpnU22'
+  (score_thresh): 0.9
+  (val_score_threshs): (0.9,)
+  (nms_thresh): 0.5
+  (val_nms_threshs): (0.5,)
+  (contour_head_stride): 2
+  (order): 6
+  (samples): 64
+  (refinement_iterations): 3
+  (refinement_buckets): 6
+  (inputs_mean): 0.5
+  (inputs_std): 0.5
+  (tweaks): {'BatchNorm2d': {'momentum': 0.1}}
+  (optimizer): {'Adam': {'lr': 0.0001, 'betas': (0.9, 0.999), 'weight_decay': 0.001}}
+  (scheduler): {'StepLR': {'step_size': 5, 'gamma': 0.5}}
+  (epochs): 20
+  (batch_size): 1
+  (amp): True
+  (test_batch_size): 1
+  (num_workers): 8
+  (device): 'cuda'
+  (min_visible_area_fraction): 0.75
+)
+Training set: 5632 images
+Validation set: 768 images
+score_thresh=0.9, nms_thresh=0.5, mean_f1=0.9658
+Saving visualizations for 10 randomly selected validation images.
+{
+  "best_epoch": 17,
+  "best_epoch_mean_f1": 0.9657684066448443,
+  "selected_score_thresh": 0.9,
+  "selected_nms_thresh": 0.5,
+  "threshold_search_mean_f1": 0.9657684066448443,
+  "final_validation_mean_f1": 0.9657684066448443,
+  "metrics": {
+    "0.5": {
+      "precision": 0.9777677939334531,
+      "recall": 0.9719323887242364,
+      "f1": 0.974797568930434,
+      "jaccard": 0.951099357053462,
+      "true_positives": 71819,
+      "false_positives": 1633,
+      "false_negatives": 2074
+    },
+    "0.6": {
+      "precision": 0.9771823776071448,
+      "recall": 0.9713504662146617,
+      "f1": 0.9741979898822363,
+      "jaccard": 0.9499684186266647,
+      "true_positives": 71776,
+      "false_positives": 1676,
+      "false_negatives": 2117
+    },
+    "0.7": {
+      "precision": 0.9759434732886784,
+      "recall": 0.9701189557874224,
+      "f1": 0.9729289063681442,
+      "jaccard": 0.9475955330372532,
+      "true_positives": 71685,
+      "false_positives": 1767,
+      "false_negatives": 2208
+    },
+    "0.8": {
+      "precision": 0.9696808800304961,
+      "recall": 0.9638937382431353,
+      "f1": 0.9664824846969209,
+      "jaccard": 0.9356110972829287,
+      "true_positives": 71225,
+      "false_positives": 2227,
+      "false_negatives": 2668
+    },
+    "0.9": {
+      "precision": 0.9438817186734194,
+      "recall": 0.9382485485769965,
+      "f1": 0.9404350833464856,
+      "jaccard": 0.8886529086529563,
+      "true_positives": 69330,
+      "false_positives": 4122,
+      "false_negatives": 4563
+    }
+  }
+}
+=============================================
+Epilog started: Sat Aug 22 05:36:02 CEST 2026
+User:           hu09
+Job ID:         486730
+Partition:      gpu-a100
+Account:        default
+Batchhost:      ga013
+Job name:       haicu-cpn+
+Nodelist:       ga013
+No. of tasks:   16
+T used:           09:38:38 
+T requested:    2-00:00:00 
+Exit code:      0
+Working dir:    /data/home2/hu09/project/celldetection/demos/haicu/code
+Energy (J):     49.96M
+Energy (kWh):   13.877466
+---------------------------------------------
