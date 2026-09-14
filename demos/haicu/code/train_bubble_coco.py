@@ -44,8 +44,23 @@ def environment_case_list(name: str, default: list[int]) -> list[int]:
     return default if value is None else [int(case_id) for case_id in value.split(",") if case_id]
 
 
+def environment_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized not in {"0", "1", "false", "true", "no", "yes"}:
+        raise ValueError(f"{name} must be one of 0, 1, false, true, no, yes")
+    return normalized in {"1", "true", "yes"}
+
+
 TRAIN_CASES = environment_case_list("HAICU_TRAIN_CASES", DEFAULT_TRAIN_CASES)
 VALIDATION_CASES = environment_case_list("HAICU_VALIDATION_CASES", DEFAULT_VALIDATION_CASES)
+TRAINING_EPOCHS = int(os.environ.get("HAICU_EPOCHS", "20"))
+EVALUATION_EVERY = max(1, int(os.environ.get("HAICU_EVAL_EVERY", "1")))
+SCHEDULER_STEP_SIZE = int(
+    os.environ.get("HAICU_SCHEDULER_STEP_SIZE", str(max(5, TRAINING_EPOCHS // 4)))
+)
 
 
 def set_seed(seed: int) -> None:
@@ -63,8 +78,8 @@ if torch.cuda.is_available():
 
 conf = cd.Config(
     uncertainty_head=True,
-    uncertainty_nms=True,
-    uncertainty_factor=7.0,
+    uncertainty_nms=environment_bool("HAICU_UNCERTAINTY_NMS", True),
+    uncertainty_factor=float(os.environ.get("HAICU_UNCERTAINTY_FACTOR", "7.0")),
     directory=str(DEFAULT_DATA_ROOT),
     download_data=False,
     in_channels=1,
@@ -81,22 +96,25 @@ conf = cd.Config(
     # val_nms_threshs=(0.3, 0.5, 0.8),
     val_nms_threshs=(0.5,),
     contour_head_stride=2,
-    order=6,
-    samples=64,
+    order=int(os.environ.get("HAICU_ORDER", "6")),
+    samples=int(os.environ.get("HAICU_SAMPLES", "64")),
     refinement_iterations=3,
     refinement_buckets=6,
     inputs_mean=0.5,
     inputs_std=0.5,
     tweaks={"BatchNorm2d": {"momentum": 0.1}},
     optimizer={"Adam": {"lr": 0.0001, "betas": (0.9, 0.999), "weight_decay": 1e-3}},
-    scheduler={"StepLR": {"step_size": 5, "gamma": 0.5}},
-    epochs=int(os.environ.get("HAICU_EPOCHS", "20")),
+    scheduler={"StepLR": {
+        "step_size": SCHEDULER_STEP_SIZE,
+        "gamma": float(os.environ.get("HAICU_SCHEDULER_GAMMA", "0.5")),
+    }},
+    epochs=TRAINING_EPOCHS,
     batch_size=1,
     amp=torch.cuda.is_available(),
     test_batch_size=1,
     num_workers=8,
     device="cuda" if torch.cuda.is_available() else "cpu",
-    min_visible_area_fraction=MIN_VISIBLE_AREA_FRACTION,
+    min_visible_area_fraction=float(os.environ.get("HAICU_MIN_VISIBLE_AREA_FRACTION", str(MIN_VISIBLE_AREA_FRACTION))),
 )
 print(conf)
 
@@ -137,6 +155,9 @@ uncertainty_dir = output_dir / "uncertainty"
 top_uncertainty_dir = uncertainty_dir / "top_instances"
 config_path = output_dir / "config.json"
 conf.to_json(str(config_path))
+config_payload = json.loads(config_path.read_text(encoding="utf-8"))
+config_payload["evaluation_every"] = EVALUATION_EVERY
+config_path.write_text(json.dumps(config_payload, indent=2), encoding="utf-8")
 (output_dir / "split.json").write_text(json.dumps({"training_cases": TRAIN_CASES, "validation_cases": VALIDATION_CASES}, indent=2))
 mlflow.log_params(
     {
@@ -146,9 +167,13 @@ mlflow.log_params(
         "min_visible_area_fraction": conf.min_visible_area_fraction,
         "batch_size": conf.batch_size,
         "epochs": conf.epochs,
+        "evaluation_every": EVALUATION_EVERY,
         "cpn": conf.cpn,
         "order": conf.order,
         "samples": conf.samples,
+        "uncertainty_nms": conf.uncertainty_nms,
+        "uncertainty_factor": conf.uncertainty_factor,
+        "scheduler": str(conf.scheduler),
     }
 )
 
@@ -511,7 +536,7 @@ def metrics_at_thresholds(results: cd.data.LabelMatcherList) -> dict:
 
 
 def plot_iou_metrics_and_counts(results: cd.data.LabelMatcherList) -> None:
-    thresholds = np.arange(0.1, 1.0, 0.1)
+    thresholds = np.asarray(IOU_THRESHOLDS, dtype=float)
     groups = (("Global-level metrics", ("precision", "recall", "f1_np", "jaccard_np", "fowlkes_mallows_np")), ("Sample-level metrics", ("avg_precision", "avg_recall", "avg_f1", "avg_jaccard", "avg_fowlkes_mallows")), ("Detection counts", ("true_positives", "false_positives", "false_negatives")))
     figure, axes = plt.subplots(1, 3, figsize=(24, 6))
     for axis, (title, keys) in zip(axes, groups):
@@ -533,18 +558,33 @@ def plot_iou_metrics_and_counts(results: cd.data.LabelMatcherList) -> None:
 
 train_losses = []
 validation_losses = []
+validation_f1s = []
+learning_rates = []
 best_validation_f1 = -np.inf
 best_model_path = output_dir / "best_model.pt"
 for epoch in range(1, conf.epochs + 1):
     train_loss = train_epoch(epoch)
     validation_loss = validate_epoch()
-    validation_results, _ = evaluate()
-    validation_f1 = average_f1(validation_results)
+    should_evaluate = epoch % EVALUATION_EVERY == 0 or epoch == conf.epochs
+    if should_evaluate:
+        validation_results, _ = evaluate()
+        validation_f1 = average_f1(validation_results)
+    else:
+        validation_f1 = float("nan")
     scheduler.step()
     train_losses.append(train_loss)
     validation_losses.append(validation_loss)
-    mlflow.log_metrics({"train_loss": train_loss, "validation_loss": validation_loss, "validation_mean_f1": validation_f1, "learning_rate": optimizer.param_groups[0]["lr"]}, step=epoch)
-    if validation_f1 > best_validation_f1:
+    validation_f1s.append(validation_f1)
+    learning_rates.append(optimizer.param_groups[0]["lr"])
+    logged_metrics = {
+        "train_loss": train_loss,
+        "validation_loss": validation_loss,
+        "learning_rate": optimizer.param_groups[0]["lr"],
+    }
+    if should_evaluate:
+        logged_metrics["validation_mean_f1"] = validation_f1
+    mlflow.log_metrics(logged_metrics, step=epoch)
+    if should_evaluate and validation_f1 > best_validation_f1:
         best_validation_f1 = validation_f1
         torch.save({"epoch": epoch, "model_state": model.state_dict(), "validation_mean_f1": validation_f1}, best_model_path)
     if epoch % 10 == 0:
@@ -552,6 +592,29 @@ for epoch in range(1, conf.epochs + 1):
 
 
 plot_loss_curves(train_losses, validation_losses)
+(output_dir / "history.json").write_text(
+    json.dumps(
+        [
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "validation_loss": validation_loss,
+                "validation_mean_f1": validation_f1,
+                "learning_rate": learning_rate,
+            }
+            for epoch, train_loss, validation_loss, validation_f1, learning_rate in zip(
+                range(1, conf.epochs + 1),
+                train_losses,
+                validation_losses,
+                validation_f1s,
+                learning_rates,
+            )
+        ],
+        indent=2,
+        allow_nan=True,
+    ),
+    encoding="utf-8",
+)
 checkpoint = torch.load(best_model_path, map_location=conf.device)
 model.load_state_dict(checkpoint["model_state"])
 score_threshold, nms_threshold, tuned_f1 = validate_thresholds()

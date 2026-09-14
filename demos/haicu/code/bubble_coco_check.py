@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -12,6 +13,7 @@ import celldetection as cd
 from bubble_coco_dataset import (
     DEFAULT_DATA_ROOT,
     HAICUBubbleCPNDataset,
+    MIN_VISIBLE_AREA_FRACTION,
     parse_case_list,
     select_visible_contours,
 )
@@ -22,6 +24,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--cases", default="1", help="Comma-separated case IDs")
     parser.add_argument("--examples-per-case", type=int, default=4)
+    parser.add_argument(
+        "--min-visible-area-fraction",
+        type=float,
+        default=MIN_VISIBLE_AREA_FRACTION,
+        help="Retain boundary polygons at or above this visible-area fraction.",
+    )
     parser.add_argument(
         "--check-cpn-targets",
         action="store_true",
@@ -61,7 +69,8 @@ def check_case(
     examples: int,
     output_dir: Path,
     check_cpn_targets: bool,
-) -> None:
+    min_visible_area_fraction: float,
+) -> dict:
     indices = dataset.case_indices[case_id]
     annotation_count = 0
     boundary_annotation_count = 0
@@ -79,7 +88,11 @@ def check_case(
                 or np.any(contour[:, 1] >= image.shape[0])
             )
             boundary_annotation_count += int(crosses_image_boundary)
-        kept_contours, _ = select_visible_contours(contours, image.shape)
+        kept_contours, _ = select_visible_contours(
+            contours,
+            image.shape,
+            min_visible_area_fraction=min_visible_area_fraction,
+        )
         discarded_annotation_count += len(contours) - len(kept_contours)
         if offset < examples:
             draw_overlay(
@@ -103,20 +116,47 @@ def check_case(
                         f"inputs={sample['inputs'].shape}, targets={sample['targets'].shape}, "
                         f"fourier={sample['fourier'][0].shape}, locations={sample['locations'][0].shape}"
                     )
+    summary = {
+        "case_id": case_id,
+        "images": len(indices),
+        "annotations": annotation_count,
+        "boundary_crossing_annotations": boundary_annotation_count,
+        "discarded_annotations": discarded_annotation_count,
+        "retained_annotations": annotation_count - discarded_annotation_count,
+        "min_visible_area_fraction": min_visible_area_fraction,
+        "cameras": sorted(cameras),
+    }
     print(
         f"Train_{case_id}: {len(indices)} images, {annotation_count} annotations, "
         f"boundary-crossing annotations={boundary_annotation_count}, "
-        f"discarded below 75% visible area={discarded_annotation_count}, cameras={sorted(cameras)}"
+        f"discarded below {min_visible_area_fraction:.0%} visible area={discarded_annotation_count}, "
+        f"cameras={sorted(cameras)}"
     )
+    return summary
 
 
 def main() -> None:
     args = parse_args()
     case_ids = parse_case_list(args.cases)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    dataset = HAICUBubbleCPNDataset(args.data_root, case_ids)
+    dataset = HAICUBubbleCPNDataset(
+        args.data_root,
+        case_ids,
+        min_visible_area_fraction=args.min_visible_area_fraction,
+    )
+    summaries = []
     for case_id in case_ids:
-        check_case(dataset, case_id, args.examples_per_case, args.output_dir, args.check_cpn_targets)
+        summaries.append(check_case(
+            dataset,
+            case_id,
+            args.examples_per_case,
+            args.output_dir,
+            args.check_cpn_targets,
+            args.min_visible_area_fraction,
+        ))
+    (args.output_dir / "visible_area_summary.json").write_text(
+        json.dumps(summaries, indent=2), encoding="utf-8"
+    )
 
 
 if __name__ == "__main__":
